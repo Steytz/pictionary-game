@@ -1,3 +1,5 @@
+// Shared types between client and server
+
 export interface Player {
     id: string
     name: string
@@ -36,10 +38,10 @@ export type Difficulty = 'easy' | 'medium' | 'hard'
 export interface Round {
     drawerId: string
     word: string
-    wordOptions?: WordOption[]
+    wordOptions?: WordOption[] // Only sent to drawer
     startTime: number
     timeLimit: number
-    hasGuessed: Set<string>
+    hasGuessed: Set<string> // Player IDs who have guessed
     difficulty: Difficulty
 }
 
@@ -67,8 +69,11 @@ export interface GameConfig {
     pointsToWin: number
 }
 
+// Socket event types
 export interface ServerToClientEvents {
     'room-created': (roomId: string) => void
+    'your-player-id': (playerId: string) => void
+    'drawer-word': (word: string, difficulty: Difficulty, timeLimit: number) => void
     'player-joined': (player: Player, players: Player[]) => void
     'player-left': (playerId: string, players: Player[]) => void
     'player-disconnected': (playerId: string) => void
