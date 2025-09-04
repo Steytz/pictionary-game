@@ -4,6 +4,12 @@ import { AppLayout, TwoColumn } from './components/AppLayout'
 import { PlayerList } from './components/PlayerList'
 import { CanvasBoard } from './components/CanvasBoard'
 import { Card } from "./components/Card.tsx";
+import {ChatPanel} from "./components/ChatPanel.tsx";
+import {ScoreBoard} from "./components/ScoreBoard.tsx";
+import {StatusBar} from "./components/StatusBar.tsx";
+import {WordPicker} from "./components/WordPicker.tsx";
+import {RoundBanner} from "./components/RoundBanner.tsx";
+import {GameOverModal} from "./components/GameOverModal.tsx";
 
 function App() {
     const [playerName, setPlayerName] = useState('')
@@ -30,30 +36,18 @@ function App() {
         sendMessage,
     } = useSocket()
 
-    const inRoom = Boolean(gameState?.roomId)
-    const canStart = gameState?.gameStatus === 'waiting' && (gameState?.players.length ?? 0) >= 2
-
-    const handleSend = () => {
-        if (!message.trim()) return
-        sendMessage(message.trim())
-        setMessage('')
-    }
-
-    const drawerId = gameState?.players.find((p) => p.isDrawing)?.id
-    const iAmDrawer = drawerId === myPlayerId
-
     return (
         <AppLayout>
             <Card title="Pictionary Game">
                 <div className="text-sm text-gray-600">
                     Connection:{' '}
                     <span className={connected ? 'text-green-600 font-semibold' : 'text-red-600 font-semibold'}>
-            {connected ? 'Connected' : 'Disconnected'}
-          </span>
+          {connected ? 'Connected' : 'Disconnected'}
+        </span>
                 </div>
             </Card>
 
-            {!inRoom && (
+            {!gameState?.roomId && (
                 <Card title="Join or Create Room">
                     <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
                         <div className="flex-1">
@@ -102,145 +96,90 @@ function App() {
                 </Card>
             )}
 
-            {inRoom && gameState && (
+            {gameState?.roomId && gameState && (
                 <TwoColumn
                     sidebar={
-                        <Card
-                            title={`Room ${gameState.roomId}`}
-                            actions={
+                        <div className="space-y-4">
+                            <div className="flex items-center justify-between">
+                                <h2 className="text-xl font-semibold">Room {gameState.roomId}</h2>
                                 <button onClick={leaveRoom} className="rounded bg-red-600 px-3 py-1.5 text-white">
                                     Leave
                                 </button>
-                            }
-                        >
-                            <div className="mb-3 text-sm text-gray-600">
-                                Drawer:{' '}
-                                <span className="font-medium">{gameState.players.find((p) => p.isDrawing)?.name ?? '—'}</span>
                             </div>
-                            <PlayerList players={gameState.players} myPlayerId={myPlayerId} />
-                        </Card>
+                            <ScoreBoard players={gameState.players} myPlayerId={myPlayerId} />
+                        </div>
                     }
                     main={
-                        <Card
-                            title="Game"
-                            actions={
-                                canStart ? (
-                                    <button onClick={startGame} className="rounded bg-green-600 px-3 py-1.5 text-white">
-                                        Start Game
-                                    </button>
-                                ) : null
-                            }
-                        >
-                            {error && <div className="mb-3 rounded bg-red-100 p-2 text-red-800">{error}</div>}
+                        <div className="space-y-4">
+                            <StatusBar
+                                status={gameState.gameStatus}
+                                timeRemaining={gameState.gameStatus === 'drawing' ? timeRemaining : undefined}
+                                drawerName={gameState.players.find((p) => p.isDrawing)?.name}
+                            />
 
-                            <div className="mb-4">
-                                <div className="font-semibold">
-                                    Status: <span className="capitalize">{gameState.gameStatus}</span>
-                                    {gameState.gameStatus === 'drawing' && timeRemaining > 0 && (
-                                        <span className="ml-2 text-blue-600">Time: {timeRemaining}s</span>
+                            {/* Word picker modal (drawer only receives non-empty options) */}
+                            <WordPicker
+                                open={wordOptions.length > 0}
+                                options={wordOptions}
+                                onSelect={(opt) => selectWord(opt.word, opt.difficulty)}
+                            />
+
+                            {/* Phase banners / errors */}
+                            {error && <RoundBanner text={error} tone="warning" />}
+                            {gameState.gameStatus === 'roundEnd' && (
+                                <RoundBanner text="Round ended — next drawer is choosing…" tone="info" />
+                            )}
+
+                            <div className="rounded-lg border bg-white p-3 shadow">
+                                <div className="mb-2 flex items-center justify-between">
+                                    {currentWord && (
+                                        <div className="text-sm">
+                                            {selectedWord ? (
+                                                <span>
+            <span className="font-medium">Your word:</span> {selectedWord}{' '}
+                                                    <span className="ml-2 text-gray-500">({currentWord.difficulty})</span>
+          </span>
+                                            ) : (
+                                                <span>
+            Word: {'_'.repeat(currentWord.length)} ({currentWord.length} letters){' '}
+                                                    <span className="ml-2 text-gray-500">({currentWord.difficulty})</span>
+          </span>
+                                            )}
+                                        </div>
+                                    )}
+                                    {gameState.gameStatus === 'waiting' && (gameState.players.length ?? 0) >= 2 && (
+                                        <button onClick={startGame} className="rounded bg-green-600 px-3 py-1.5 text-white shadow">
+                                            Start Game
+                                        </button>
                                     )}
                                 </div>
-                            </div>
 
-                            <div className="mb-6">
                                 <CanvasBoard
-                                    isDrawer={iAmDrawer}
+                                    isDrawer={gameState.players.find(p => p.isDrawing)?.id === myPlayerId}
                                     strokes={strokes}
                                     onDraw={draw}
                                     onClear={clearCanvas}
-                                    width={Math.min(900, window.innerWidth - 64)}
-                                    height={480}
+                                    height={460}              // tweak as you like
+                                    className="mt-2"
                                 />
                             </div>
 
-                            {wordOptions.length > 0 && (
-                                <div className="mb-4 rounded bg-yellow-100 p-4">
-                                    <p className="mb-2 font-semibold">Choose a word to draw:</p>
-                                    <div className="space-y-2">
-                                        {wordOptions.map((opt, idx) => (
-                                            <button
-                                                key={`${opt.word}-${idx}`}
-                                                onClick={() => selectWord(opt.word, opt.difficulty)}
-                                                className={`block w-full rounded p-2 text-left ${
-                                                    opt.difficulty === 'easy'
-                                                        ? 'bg-green-200 hover:bg-green-300'
-                                                        : opt.difficulty === 'medium'
-                                                            ? 'bg-yellow-200 hover:bg-yellow-300'
-                                                            : 'bg-red-200 hover:bg-red-300'
-                                                }`}
-                                            >
-                                                {opt.word} ({opt.difficulty} - {opt.points} points)
-                                            </button>
-                                        ))}
-                                    </div>
-                                </div>
-                            )}
-
-                            {currentWord && (
-                                <div className="mb-4 rounded bg-blue-100 p-4">
-                                    {selectedWord ? (
-                                        <>
-                                            <p className="text-lg font-bold">Your word: {selectedWord}</p>
-                                            <p>Difficulty: {currentWord.difficulty}</p>
-                                        </>
-                                    ) : (
-                                        <>
-                                            <p>
-                                                Word: {'_'.repeat(currentWord.length)} ({currentWord.length} letters)
-                                            </p>
-                                            <p>Difficulty: {currentWord.difficulty}</p>
-                                        </>
-                                    )}
-                                </div>
-                            )}
-
-                            {gameState.gameStatus === 'gameOver' && gameState.winner && (
-                                <div className="mb-4 rounded bg-green-100 p-4">
-                                    <p className="text-xl font-bold">
-                                        🎉 {gameState.winner.name} wins with {gameState.winner.score} points!
-                                    </p>
-                                </div>
-                            )}
-
-                            <div className="mt-4">
+                            <div className="rounded-lg border bg-white p-3 shadow">
                                 <h3 className="mb-2 font-semibold">Chat / Guesses</h3>
-                                <div className="mb-2 h-40 overflow-y-auto rounded border bg-gray-50 p-2">
-                                    {gameState.messages.map((msg) => (
-                                        <div
-                                            key={msg.id}
-                                            className={`text-sm ${
-                                                msg.isCorrect
-                                                    ? 'font-bold text-green-600'
-                                                    : msg.isClose
-                                                        ? 'text-yellow-700'
-                                                        : msg.isGuess
-                                                            ? 'text-blue-700'
-                                                            : ''
-                                            }`}
-                                        >
-                                            <strong>{msg.playerName}:</strong> {msg.message}
-                                            {msg.isCorrect && ' ✅'}
-                                            {msg.isClose && ' (close!)'}
-                                        </div>
-                                    ))}
-                                </div>
-                                <div className="flex">
-                                    <input
-                                        type="text"
-                                        value={message}
-                                        onChange={(e) => setMessage(e.target.value)}
-                                        onKeyDown={(e) => e.key === 'Enter' && handleSend()}
-                                        placeholder={
-                                            gameState.gameStatus === 'drawing' ? 'Type your guess...' : 'Type a message...'
-                                        }
-                                        className="flex-1 rounded-l border p-2"
-                                    />
-                                    <button onClick={handleSend} className="rounded-r bg-blue-600 px-4 py-2 text-white">
-                                        Send
-                                    </button>
-                                </div>
+                                <ChatPanel
+                                    messages={gameState.messages}
+                                    placeholder={gameState.gameStatus === 'drawing' ? 'Type your guess…' : 'Type a message…'}
+                                    onSend={sendMessage}
+                                />
                             </div>
-                        </Card>
+
+                            {/* Game over */}
+                            <GameOverModal
+                                open={gameState.gameStatus === 'gameOver'}
+                                winner={gameState.winner}
+                                onClose={() => {}}
+                            />
+                        </div>
                     }
                 />
             )}
