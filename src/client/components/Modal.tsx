@@ -1,14 +1,12 @@
-// src/client/components/Modal.tsx
-import { PropsWithChildren, useEffect } from 'react'
+import {type FC, type PropsWithChildren, useEffect} from 'react'
 
-export function Modal({
-                          open,
-                          onClose,
-                          title,
-                          children,
-                      }: PropsWithChildren<{ open: boolean; onClose: () => void; title?: string }>) {
+interface Props {
+    open: boolean; onClose?: () => void; title?: string
+}
+
+export const Modal: FC<PropsWithChildren<Props>> = ({open, onClose, title, children }) => {
     useEffect(() => {
-        const onEsc = (e: KeyboardEvent) => e.key === 'Escape' && onClose()
+        const onEsc = (e: KeyboardEvent) => e.key === 'Escape' && onClose && onClose()
         if (open) document.addEventListener('keydown', onEsc)
         return () => document.removeEventListener('keydown', onEsc)
     }, [open, onClose])
@@ -18,20 +16,20 @@ export function Modal({
     return (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
             <div
-                className="absolute inset-0 bg-black/50 backdrop-blur-sm"
+                className="absolute inset-0 bg-black/80 backdrop-blur-md"
                 onClick={onClose}
             />
-            <div className="relative z-10 w-full max-w-md rounded-xl bg-white shadow-2xl">
-                <div className="flex items-center justify-between border-b px-4 py-3">
-                    {title && <h3 className="text-lg font-semibold">{title}</h3>}
-                    <button
+            <div className="relative z-10 w-full max-w-md rounded-2xl bg-gray-800 border border-gray-700/50 shadow-2xl animate-fadeIn">
+                <div className="flex items-center justify-between border-b border-gray-700/50 px-6 py-4">
+                    {title && <h3 className="text-xl font-bold text-white">{title}</h3>}
+                    {onClose && <button
                         onClick={onClose}
-                        className="rounded px-2 py-1 text-gray-600 hover:bg-gray-100"
+                        className="rounded-lg px-3 py-1 text-gray-400 hover:bg-gray-700/50 hover:text-white transition-all"
                     >
                         ✕
-                    </button>
+                    </button>}
                 </div>
-                <div className="p-4">{children}</div>
+                <div className="p-6">{children}</div>
             </div>
         </div>
     )

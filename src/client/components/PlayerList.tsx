@@ -1,12 +1,12 @@
 import type { Player } from '../../shared/types'
+import type {FC} from "react";
 
-export function PlayerList({
-                               players,
-                               myPlayerId,
-                           }: {
+interface Props {
     players: Player[]
     myPlayerId?: string
-}) {
+}
+
+export const PlayerList: FC<Props> = ({ players, myPlayerId }) => {
     if (!players?.length) return <p className="text-gray-500">No players yet.</p>
 
     return (

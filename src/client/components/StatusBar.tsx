@@ -1,32 +1,65 @@
-// src/client/components/StatusBar.tsx
 import { TimerBadge } from './TimerBadge'
+import type {FC} from "react";
 
-export function StatusBar({
-                              status,
-                              timeRemaining,
-                              drawerName,
-                          }: {
+interface Props {
     status: string
     timeRemaining?: number
     drawerName?: string
-}) {
-    const tone =
-        status === 'drawing' ? 'from-green-50 to-emerald-50' :
-            status === 'selecting' ? 'from-yellow-50 to-amber-50' :
-                status === 'roundEnd' ? 'from-blue-50 to-indigo-50' :
-                    status === 'gameOver' ? 'from-rose-50 to-pink-50' :
-                        'from-slate-50 to-slate-100'
+}
+
+const statusConfig = {
+    drawing: {
+        bg: 'from-green-900/50 to-emerald-900/50',
+        border: 'border-green-700/50',
+        text: 'text-green-400',
+        label: '🎨 Drawing Phase'
+    },
+    selecting: {
+        bg: 'from-yellow-900/50 to-amber-900/50',
+        border: 'border-yellow-700/50',
+        text: 'text-yellow-400',
+        label: '📝 Word Selection'
+    },
+    roundEnd: {
+        bg: 'from-blue-900/50 to-indigo-900/50',
+        border: 'border-blue-700/50',
+        text: 'text-blue-400',
+        label: '⏸️ Round Ended'
+    },
+    gameOver: {
+        bg: 'from-purple-900/50 to-pink-900/50',
+        border: 'border-purple-700/50',
+        text: 'text-purple-400',
+        label: '🏆 Game Over'
+    },
+    waiting: {
+        bg: 'from-gray-900/50 to-gray-800/50',
+        border: 'border-gray-700/50',
+        text: 'text-gray-400',
+        label: '⏳ Waiting'
+    }
+}
+
+export const StatusBar: FC<Props> = ({ status, timeRemaining, drawerName } ) => {
+    const config = statusConfig[status as keyof typeof statusConfig] || statusConfig.waiting
 
     return (
-        <div className={`flex flex-wrap items-center justify-between gap-3 rounded-lg border bg-gradient-to-r ${tone} px-3 py-2 shadow-sm`}>
-            <div className="text-sm">
-                <span className="font-medium">Status:</span>{' '}
-                <span className="capitalize">{status}</span>
-                {drawerName && <span className="ml-2 text-gray-700">• Drawer: <span className="font-medium">{drawerName}</span></span>}
+        <div className={`rounded-xl bg-gradient-to-r ${config.bg} ${config.border} border backdrop-blur-sm p-4`}>
+            <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="flex items-center gap-3">
+                    <span className={`text-lg font-bold ${config.text}`}>
+                        {config.label}
+                    </span>
+                    {drawerName && (
+                        <span className="text-gray-300">
+                            • Drawer: <span className="font-semibold text-white">{drawerName}</span>
+                        </span>
+                    )}
+                </div>
+                {typeof timeRemaining === 'number' && timeRemaining > 0 && (
+                    <TimerBadge seconds={timeRemaining} />
+                )}
             </div>
-            {typeof timeRemaining === 'number' && timeRemaining > 0 && (
-                <TimerBadge seconds={timeRemaining} />
-            )}
         </div>
     )
 }

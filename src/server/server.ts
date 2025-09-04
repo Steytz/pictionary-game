@@ -4,8 +4,15 @@ import { Server, Socket } from 'socket.io'
 import cors from 'cors'
 import path from 'path'
 import { fileURLToPath } from 'url'
-import type { ClientToServerEvents, ServerToClientEvents, Difficulty, DrawEvent } from '../shared/types'
+import type {
+    ClientToServerEvents,
+    ServerToClientEvents,
+    Difficulty,
+    DrawEvent,
+    WordOption,
+} from '../shared/types'
 import { RoomManager } from './RoomManager'
+import { GameRoom } from './GameRoom'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -15,15 +22,15 @@ const httpServer = createServer(app)
 
 const io = new Server<ClientToServerEvents, ServerToClientEvents>(httpServer, {
     cors: {
-        origin: process.env.NODE_ENV === 'production' ? false : 'http://localhost:5173',
-        methods: ['GET', 'POST']
-    }
+        /** allow LAN/dev **/
+        origin: process.env.NODE_ENV === 'production' ? false : true,
+        methods: ['GET', 'POST'],
+    },
 })
 
 app.use(cors())
 app.use(express.json())
 
-// Serve static files in production
 if (process.env.NODE_ENV === 'production') {
     app.use(express.static(path.join(__dirname, '../../dist/client')))
     app.get('*', (_, res) => {
@@ -31,21 +38,119 @@ if (process.env.NODE_ENV === 'production') {
     })
 }
 
-// Initialize room manager
 const roomManager = new RoomManager()
 
-// Health check endpoint
 app.get('/api/health', (_, res) => {
     res.json({
         status: 'ok',
         rooms: roomManager.getRoomCount(),
-        players: roomManager.getTotalPlayerCount()
+        players: roomManager.getTotalPlayerCount(),
     })
 })
 
-// Socket connection handling
+/** ---------------------------
+ *  Auto-select orchestration
+ *  ---------------------------
+ */
+const AUTO_SELECT_MS = 10_000
+const autoSelectTimers = new Map<string, NodeJS.Timeout>()
+
+function clearAutoForRoom(roomId: string) {
+    const t = autoSelectTimers.get(roomId)
+    if (t) {
+        clearTimeout(t)
+        autoSelectTimers.delete(roomId)
+    }
+}
+
+function scheduleAutoSelect(room: GameRoom, drawerId: string, options: WordOption[]) {
+    const state = room.getState()
+    const roomId = state.roomId
+    clearAutoForRoom(roomId)
+
+    const timer = setTimeout(() => {
+        const s = room.getState()
+        /** still selecting and same drawer? **/
+        if (s.gameStatus !== 'selecting') return
+        const stillDrawer = s.players.find((p) => p.isDrawing)?.id
+        if (stillDrawer !== drawerId) return
+
+        const easy = options.find((o) => o.difficulty === 'easy') || options[0]
+        if (!easy) return
+
+        const ok = room.selectWord(easy.word, easy.difficulty)
+        if (!ok) return
+
+        proceedAfterSelection(room, io, drawerId, easy.word, easy.difficulty)
+    }, AUTO_SELECT_MS)
+
+    autoSelectTimers.set(roomId, timer)
+}
+
+function proceedAfterSelection(
+    room: GameRoom,
+    io: Server<ClientToServerEvents, ServerToClientEvents>,
+    drawerId: string,
+    word: string,
+    difficulty: Difficulty
+) {
+    const state = room.getState()
+    const roomId = state.roomId
+    const timeLimit = state.config.roundTime
+
+    io.to(roomId).emit('word-selected', word.length, difficulty, timeLimit)
+
+    const drawerSock = room.getSocketByPlayerId(drawerId)
+    if (drawerSock) {
+        io.to(drawerSock).emit('drawer-word', word, difficulty, timeLimit)
+    }
+
+    io.to(roomId).emit('game-state', room.getState())
+
+    const timerInterval = setInterval(() => {
+        const currentState = room.getState()
+        const remaining = room.getRemainingTime()
+
+        switch (currentState.gameStatus) {
+            case 'drawing': {
+                io.to(roomId).emit('timer-update', remaining)
+                break
+            }
+            case 'roundEnd': {
+                clearInterval(timerInterval)
+
+                io.to(roomId).emit('round-ended', word, room.getNextDrawerId())
+
+                setTimeout(() => {
+                    const nextDrawerId = room.getNextDrawerId()
+                    if (nextDrawerId) {
+                        const nextOptions = room.continueToNextRound()
+                        if (nextOptions) {
+                            const nextSock = room.getSocketByPlayerId(nextDrawerId)
+                            if (nextSock) {
+                                io.to(nextSock).emit('game-started', nextDrawerId, nextOptions)
+                                io.to(roomId).except(nextSock).emit('game-started', nextDrawerId, [])
+                            } else {
+                                io.to(roomId).emit('game-started', nextDrawerId, [])
+                            }
+                            scheduleAutoSelect(room, nextDrawerId, nextOptions)
+                        }
+                    }
+                    io.to(roomId).emit('game-state', room.getState())
+                }, 3000)
+                break
+            }
+            default: {
+                clearInterval(timerInterval)
+                break
+            }
+        }
+    }, 1000)
+}
+
 io.on('connection', (socket: Socket<ClientToServerEvents, ServerToClientEvents>) => {
     console.log('New connection:', socket.id)
+
     const leaveCurrentRoom = () => {
         const existingRoom = roomManager.getRoomBySocket(socket.id)
         if (existingRoom) {
@@ -53,11 +158,10 @@ io.on('connection', (socket: Socket<ClientToServerEvents, ServerToClientEvents>)
             roomManager.leaveRoom(socket.id)
         }
     }
-    // Create a new room
-    socket.on('create-room', (playerName: string) => {
-       leaveCurrentRoom()
 
-        // Create new room
+    socket.on('create-room', (playerName: string) => {
+        leaveCurrentRoom()
+
         const roomId = roomManager.createRoom()
         const result = roomManager.joinRoom(socket.id, roomId, playerName)
 
@@ -68,16 +172,14 @@ io.on('connection', (socket: Socket<ClientToServerEvents, ServerToClientEvents>)
 
         socket.join(roomId)
         socket.emit('room-created', roomId)
-        socket.emit('your-player-id', result.player.id) // NEW
+        socket.emit('your-player-id', result.player.id)
         socket.emit('player-joined', result.player, result.room.getState().players)
         socket.emit('game-state', result.room.getState())
     })
 
-    // Join an existing room
     socket.on('join-room', (roomId: string, playerName: string) => {
         leaveCurrentRoom()
 
-        // Try to join the room
         const result = roomManager.joinRoom(socket.id, roomId.toUpperCase(), playerName)
 
         if (!result) {
@@ -87,24 +189,23 @@ io.on('connection', (socket: Socket<ClientToServerEvents, ServerToClientEvents>)
 
         socket.join(roomId.toUpperCase())
         socket.emit('room-created', roomId.toUpperCase())
-        socket.emit('your-player-id', result.player.id) // NEW
+        socket.emit('your-player-id', result.player.id)
         socket.emit('player-joined', result.player, result.room.getState().players)
         socket.emit('game-state', result.room.getState())
         socket.to(roomId.toUpperCase()).emit('player-joined', result.player, result.room.getState().players)
     })
 
-    // Leave room
     socket.on('leave-room', () => {
         const result = roomManager.leaveRoom(socket.id)
 
         if (result) {
             socket.leave(result.roomId)
-            socket.to(result.roomId).emit('player-left', result.playerId,
-                roomManager.getRoom(result.roomId)?.getState().players || [])
+            socket
+                .to(result.roomId)
+                .emit('player-left', result.playerId, roomManager.getRoom(result.roomId)?.getState().players || [])
         }
     })
 
-    // Send a message (now with guess checking)
     socket.on('send-message', (message: string) => {
         const room = roomManager.getRoomBySocket(socket.id)
         if (!room) return
@@ -112,15 +213,14 @@ io.on('connection', (socket: Socket<ClientToServerEvents, ServerToClientEvents>)
         const playerId = room.getPlayerIdBySocket(socket.id)
         if (!playerId) return
 
-        const state = room.getState()
+        const stateBefore = room.getState()
+        const roomId = stateBefore.roomId
 
-        // If drawing phase, treat non-drawer messages as guesses
-        if (state.gameStatus === 'drawing' && state.currentRound) {
-            const player = state.players.find(p => p.id === playerId)
+        if (stateBefore.gameStatus === 'drawing' && stateBefore.currentRound) {
+            const player = stateBefore.players.find((p) => p.id === playerId)
+
             if (player && !player.isDrawing) {
-                // Snapshot before mutating game state
-                const wordSnapshot = state.currentRound.word
-
+                const roundWord = stateBefore.currentRound.word
                 const guessResult = room.processGuess(playerId, message)
 
                 const chatMessage = room.addMessage(playerId, message)
@@ -128,76 +228,70 @@ io.on('connection', (socket: Socket<ClientToServerEvents, ServerToClientEvents>)
 
                 if (guessResult.result === 'correct') {
                     chatMessage.isCorrect = true
-
-                    // Announce correct guess with the snapshot
-                    io.to(state.roomId).emit('correct-guess', playerId, wordSnapshot)
+                    io.to(roomId).emit('correct-guess', playerId, roundWord)
 
                     const afterGuess = room.getState()
 
-                    if (afterGuess.gameStatus === 'roundEnd') {
-                        // Reveal round end immediately
-                        const nextDrawerIdPeek = room.getNextDrawerId() // who is up next (already rotated in endRound)
-                        io.to(state.roomId).emit('round-ended', wordSnapshot, nextDrawerIdPeek)
-                        io.to(state.roomId).emit('game-state', afterGuess)
+                    if (afterGuess.gameStatus === 'gameOver') {
+                        io.to(roomId).emit('game-over', afterGuess.winner!, afterGuess.players)
+                        io.to(roomId).emit('game-state', afterGuess)
+                        io.to(roomId).emit('chat-message', chatMessage)
+                        return
+                    }
 
-                        // Small pause, then start next selection phase for the next drawer ONLY
+                    if (afterGuess.gameStatus === 'roundEnd') {
+                        io.to(roomId).emit('chat-message', chatMessage)
+                        io.to(roomId).emit('round-ended', roundWord, room.getNextDrawerId())
+
                         setTimeout(() => {
                             const nextDrawerId = room.getNextDrawerId()
-                            if (!nextDrawerId) {
-                                // not enough players connected anymore
-                                io.to(state.roomId).emit('game-state', room.getState())
-                                return
+                            if (nextDrawerId) {
+                                const options = room.continueToNextRound()
+                                if (options) {
+                                    const nextSock = room.getSocketByPlayerId(nextDrawerId)
+                                    if (nextSock) {
+                                        io.to(nextSock).emit('game-started', nextDrawerId, options)
+                                        io.to(roomId).except(nextSock).emit('game-started', nextDrawerId, [])
+                                    } else {
+                                        io.to(roomId).emit('game-started', nextDrawerId, [])
+                                    }
+                                    scheduleAutoSelect(room, nextDrawerId, options)
+                                }
                             }
+                            io.to(roomId).emit('game-state', room.getState())
+                        }, 3000)
 
-                            const wordOptions = room.continueToNextRound()
-                            if (!wordOptions) {
-                                io.to(state.roomId).emit('game-state', room.getState())
-                                return
-                            }
-
-                            const nextDrawerSocketId = room.getSocketByPlayerId(nextDrawerId)
-
-                            // options to drawer only
-                            if (nextDrawerSocketId) {
-                                io.to(nextDrawerSocketId).emit('game-started', nextDrawerId, wordOptions)
-                                // empty options to everyone else, EXCEPT the drawer
-                                io.to(state.roomId).except(nextDrawerSocketId).emit('game-started', nextDrawerId, [])
-                            } else {
-                                // fallback: drawer socket unknown, at least notify room of phase
-                                io.to(state.roomId).emit('game-started', nextDrawerId, [])
-                            }
-
-                            io.to(state.roomId).emit('game-state', room.getState())
-                        }, 1200) // keep this > network jitter and UI clear delay
-                    } else if (afterGuess.gameStatus === 'gameOver') {
-                        io.to(state.roomId).emit('game-over', afterGuess.winner!, afterGuess.players)
+                        return
                     }
-                } else if (guessResult.result === 'close') {
+
+                    io.to(roomId).emit('chat-message', chatMessage)
+                    io.to(roomId).emit('game-state', room.getState())
+                    return
+                }
+
+                if (guessResult.result === 'close') {
                     chatMessage.isClose = true
                 }
 
-                io.to(state.roomId).emit('chat-message', chatMessage)
-                io.to(state.roomId).emit('game-state', room.getState())
+                io.to(roomId).emit('chat-message', chatMessage)
+                io.to(roomId).emit('game-state', room.getState())
                 return
             }
         }
 
-        // Regular chat (not a guess)
-        const chatMessage = room.addMessage(playerId, message)
-        io.to(state.roomId).emit('chat-message', chatMessage)
+        const chat = room.addMessage(playerId, message)
+        io.to(roomId).emit('chat-message', chat)
     })
-    // Request current game state
+
     socket.on('request-state', () => {
         const room = roomManager.getRoomBySocket(socket.id)
         if (!room) {
             socket.emit('error', 'Not in a room')
             return
         }
-
         socket.emit('game-state', room.getState())
     })
 
-    // Start game
     socket.on('start-game', () => {
         const room = roomManager.getRoomBySocket(socket.id)
         if (!room) {
@@ -212,7 +306,7 @@ io.on('connection', (socket: Socket<ClientToServerEvents, ServerToClientEvents>)
         }
 
         const state = room.getState()
-        const drawer = state.players.find(p => p.isDrawing)
+        const drawer = state.players.find((p) => p.isDrawing)
         if (!drawer) return
 
         const drawerSocketId = room.getSocketByPlayerId(drawer.id)
@@ -224,15 +318,14 @@ io.on('connection', (socket: Socket<ClientToServerEvents, ServerToClientEvents>)
         if (drawerSocketId) {
             io.to(state.roomId).except(drawerSocketId).emit('game-started', drawer.id, [])
         } else {
-            // Fallback
             io.to(state.roomId).emit('game-started', drawer.id, [])
         }
 
-// Push state to all
         io.to(state.roomId).emit('game-state', state)
+
+        scheduleAutoSelect(room, drawer.id, wordOptions)
     })
 
-    // Select word
     socket.on('select-word', (word: string, difficulty: Difficulty) => {
         const room = roomManager.getRoomBySocket(socket.id)
         if (!room) return
@@ -240,8 +333,7 @@ io.on('connection', (socket: Socket<ClientToServerEvents, ServerToClientEvents>)
         const playerId = room.getPlayerIdBySocket(socket.id)
         const state = room.getState()
 
-        // Verify selector is the drawer
-        const drawer = state.players.find(p => p.isDrawing)
+        const drawer = state.players.find((p) => p.isDrawing)
         if (!drawer || drawer.id !== playerId) {
             socket.emit('error', 'Only the drawer can select a word')
             return
@@ -249,72 +341,14 @@ io.on('connection', (socket: Socket<ClientToServerEvents, ServerToClientEvents>)
 
         console.log(`[select-word] drawer=${drawer.id} chose "${word}" (${difficulty})`)
 
+        clearAutoForRoom(state.roomId)
 
         const success = room.selectWord(word, difficulty)
         if (!success) return
 
-        // Cache for emits
-        const selectedWord = word
-        const wordLength = word.length
-        const timeLimit = state.config.roundTime
-
-        // 1) Public: notify everyone (length only)
-        io.to(state.roomId).emit('word-selected', wordLength, difficulty, timeLimit)
-
-        // 2) Private: notify the drawer with the actual word
-        const drawerSocketId = room.getSocketByPlayerId(drawer.id)
-        if (drawerSocketId) {
-            io.to(drawerSocketId).emit('drawer-word', selectedWord, difficulty, timeLimit)
-        }
-
-        // 3) Push updated state
-        io.to(state.roomId).emit('game-state', room.getState())
-
-        // 4) Start timer ticks
-        const timerInterval = setInterval(() => {
-            const remaining = room.getRemainingTime()
-            const currentState = room.getState()
-
-            // If round transitioned away from 'drawing', stop ticking
-            if (currentState.gameStatus !== 'drawing') {
-                clearInterval(timerInterval)
-            }
-
-            // If the engine already moved to roundEnd (time-up or all guessed)
-            if (currentState.gameStatus === 'roundEnd') {
-                clearInterval(timerInterval)
-
-                // Tell clients the round ended and reveal the word
-                io.to(state.roomId).emit('round-ended', selectedWord, room.getNextDrawerId())
-
-                // After a short pause, prep next round
-                setTimeout(() => {
-                    const nextDrawerId = room.getNextDrawerId()
-                    if (nextDrawerId) {
-                        const wordOptions = room.continueToNextRound()
-                        if (wordOptions) {
-                            const nextDrawerSocketId = room.getSocketByPlayerId(nextDrawerId)
-                            if (nextDrawerSocketId) {
-                                io.to(nextDrawerSocketId).emit('game-started', nextDrawerId, wordOptions)
-                                io.to(state.roomId).except(nextDrawerSocketId).emit('game-started', nextDrawerId, [])
-                            } else {
-                                io.to(state.roomId).emit('game-started', nextDrawerId, [])
-                            }
-                        }
-                    }
-
-                    io.to(state.roomId).emit('game-state', room.getState())
-                }, 3000)
-
-                return
-            }
-
-            // Still drawing → send tick
-            io.to(state.roomId).emit('timer-update', remaining)
-        }, 1000)
+        proceedAfterSelection(room, io, drawer.id, word, difficulty)
     })
 
-    // Drawing events
     socket.on('draw', (drawEvent: DrawEvent) => {
         const room = roomManager.getRoomBySocket(socket.id)
         if (!room) return
@@ -322,17 +356,14 @@ io.on('connection', (socket: Socket<ClientToServerEvents, ServerToClientEvents>)
         const playerId = room.getPlayerIdBySocket(socket.id)
         const state = room.getState()
 
-        // Verify the drawer
-        const drawer = state.players.find(p => p.isDrawing)
+        const drawer = state.players.find((p) => p.isDrawing)
         if (!drawer || drawer.id !== playerId) return
 
         room.addDrawingData(drawEvent)
 
-        // Broadcast to all other players in the room
         socket.to(state.roomId).emit('drawing-update', drawEvent)
     })
 
-    // Clear canvas
     socket.on('clear-canvas', () => {
         const room = roomManager.getRoomBySocket(socket.id)
         if (!room) return
@@ -340,37 +371,74 @@ io.on('connection', (socket: Socket<ClientToServerEvents, ServerToClientEvents>)
         const playerId = room.getPlayerIdBySocket(socket.id)
         const state = room.getState()
 
-        // Verify the drawer
-        const drawer = state.players.find(p => p.isDrawing)
+        const drawer = state.players.find((p) => p.isDrawing)
         if (!drawer || drawer.id !== playerId) return
 
         room.clearDrawing()
 
-        // Broadcast to all players in the room
         io.to(state.roomId).emit('canvas-cleared')
     })
 
-    // Handle disconnection
+    socket.on('restart-game', () => {
+        const room = roomManager.getRoomBySocket(socket.id)
+        if (!room) {
+            socket.emit('error', 'Not in a room')
+            return
+        }
+
+        clearAutoForRoom(room.getState().roomId)
+
+        room.resetGame()
+
+        const state = room.getState()
+        io.to(state.roomId).emit('game-state', state)
+    })
+
     socket.on('disconnect', () => {
         console.log('Disconnected:', socket.id)
 
         const result = roomManager.handleDisconnect(socket.id)
         if (result) {
-            // Notify other players
+            const room = roomManager.getRoom(result.roomId)
             socket.to(result.roomId).emit('player-disconnected', result.playerId)
+            if (room) {
+                io.to(result.roomId).emit('game-state', room.getState())
+            }
 
-            // Set a timeout to remove the player if they don't reconnect
             setTimeout(() => {
-                const room = roomManager.getRoom(result.roomId)
-                if (room) {
-                    const player = room.getState().players.find(p => p.id === result.playerId)
+                const room2 = roomManager.getRoom(result.roomId)
+                if (room2) {
+                    const player = room2.getState().players.find((p) => p.id === result.playerId)
                     if (player && !player.connected) {
                         roomManager.cleanupDisconnectedPlayer(result.roomId, result.playerId)
-                        io.to(result.roomId).emit('player-left', result.playerId,
-                            roomManager.getRoom(result.roomId)?.getState().players || [])
+                        io
+                            .to(result.roomId)
+                            .emit(
+                                'player-left',
+                                result.playerId,
+                                roomManager.getRoom(result.roomId)?.getState().players || []
+                            )
+                        const r3 = roomManager.getRoom(result.roomId)
+                        if (r3) io.to(result.roomId).emit('game-state', r3.getState())
                     }
                 }
-            }, 30000) // 30 second timeout for reconnection
+            }, 30000)
+        }
+    })
+
+    socket.on('reconnect-player', (roomId: string, playerId: string) => {
+        const ok = roomManager.reconnectPlayer(socket.id, roomId.toUpperCase(), playerId)
+        if (!ok) {
+            socket.emit('error', 'Reconnection failed.')
+            return
+        }
+        socket.join(roomId.toUpperCase())
+        socket.emit('your-player-id', playerId)
+
+        const room = roomManager.getRoom(roomId.toUpperCase())
+        if (room) {
+            io.to(roomId.toUpperCase()).emit('player-reconnected', playerId)
+            io.to(roomId.toUpperCase()).emit('game-state', room.getState())
         }
     })
 })
