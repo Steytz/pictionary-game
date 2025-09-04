@@ -42,7 +42,6 @@ const POINTS_CONFIG = {
 export function getWordOptions(): WordOption[] {
     const options: WordOption[] = []
 
-    // Get one word from each difficulty
     const easyWord = EASY_WORDS[Math.floor(Math.random() * EASY_WORDS.length)]
     const mediumWord = MEDIUM_WORDS[Math.floor(Math.random() * MEDIUM_WORDS.length)]
     const hardWord = HARD_WORDS[Math.floor(Math.random() * HARD_WORDS.length)]

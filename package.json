@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "concurrently \"npm run server:dev\" \"npm run client:dev\"",
-    "client:dev": "vite",
+    "client:dev": "vite --host",
     "server:dev": "tsx watch src/server/server.ts",
     "build": "npm run build:client && npm run build:server",
     "build:client": "vite build",

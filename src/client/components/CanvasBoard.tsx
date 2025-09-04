@@ -1,98 +1,101 @@
-// src/client/components/CanvasBoard.tsx
-import { useEffect, useMemo, useRef, useState } from 'react'
+import {type FC, useEffect, useMemo, useRef, useState} from 'react'
 import type { DrawEvent, DrawPoint } from '../../shared/types'
 
 type Tool = 'pen' | 'eraser'
 
-export function CanvasBoard({
-                                isDrawer,
-                                strokes,
-                                onDraw,
-                                onClear,
-                                height = 420,        // desired CSS height; width is responsive (100%)
-                                className = '',
-                            }: {
+interface CanvasBoardProps {
     isDrawer: boolean
     strokes: DrawEvent[]
     onDraw: (evt: DrawEvent) => void
     onClear: () => void
     height?: number
     className?: string
-}) {
+}
+
+export const CanvasBoard: FC<CanvasBoardProps> = ({
+                                isDrawer,
+                                strokes,
+                                onDraw,
+                                onClear,
+                                height = 420,
+                                className = ''}) => {
     const wrapRef = useRef<HTMLDivElement | null>(null)
     const canvasRef = useRef<HTMLCanvasElement | null>(null)
     const ctxRef = useRef<CanvasRenderingContext2D | null>(null)
 
     const [tool, setTool] = useState<Tool>('pen')
-    const [color, setColor] = useState('#111827') // slate-900
+    const [color, setColor] = useState('#667eea')
     const [size, setSize] = useState(4)
 
-    // batching/throttling
+    const colors = ['#667eea', '#ef4444', '#10b981', '#f59e0b', '#ec4899', '#06b6d4', '#8b5cf6', '#000000']
+
+    /** batching/throttling **/
     const sessionId = useMemo(() => Math.random().toString(36).slice(2), [])
     const drawingRef = useRef(false)
     const lastPointRef = useRef<{ x: number; y: number } | null>(null)
     const batchRef = useRef<DrawPoint[]>([])
     const throttleTimer = useRef<number | null>(null)
 
-    // ----- sizing: match canvas bitmap size to CSS box (fixes "half width" bug) -----
+    /** ----- sizing: match canvas bitmap size to CSS box (fixes "half width" bug) ----- **/
     const resizeToContainer = () => {
         const wrapper = wrapRef.current
         const c = canvasRef.current
         if (!wrapper || !c) return
 
-        const cssW = Math.floor(wrapper.clientWidth)     // CSS pixels
-        const cssH = Math.floor(height)                  // CSS pixels
+        const cssW = Math.floor(wrapper.clientWidth)
+        const cssH = Math.floor(height)
         const dpr = window.devicePixelRatio || 1
 
-        // set bitmap size
         c.width = Math.max(1, Math.floor(cssW * dpr))
         c.height = Math.max(1, Math.floor(cssH * dpr))
 
-        // set CSS size
         c.style.width = cssW + 'px'
         c.style.height = cssH + 'px'
 
         const ctx = c.getContext('2d')
         if (!ctx) return
-        ctx.setTransform(1, 0, 0, 1, 0, 0) // reset any previous scale
-        ctx.scale(dpr, dpr)                // map CSS coords directly
+        ctx.setTransform(1, 0, 0, 1, 0, 0)
+        ctx.scale(dpr, dpr)
         ctx.lineCap = 'round'
         ctx.lineJoin = 'round'
         ctxRef.current = ctx
 
-        // full redraw using CSS coords
-        ctx.clearRect(0, 0, cssW, cssH)
+        /** Set white background **/
+        ctx.fillStyle = '#ffffff'
+        ctx.fillRect(0, 0, cssW, cssH)
+
+        /** Redraw strokes **/
         for (const evt of strokes) drawSegment(evt.points)
     }
 
-    // observe container width changes
+    /** observe container width changes **/
     useEffect(() => {
         resizeToContainer()
         const ro = new ResizeObserver(() => resizeToContainer())
         if (wrapRef.current) ro.observe(wrapRef.current)
         return () => ro.disconnect()
-        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [height])
 
-    // redraw when strokes change
+    /** redraw when strokes change **/
     useEffect(() => {
         const c = canvasRef.current
         const ctx = ctxRef.current
         if (!c || !ctx) return
         const cssW = c.clientWidth
         const cssH = c.clientHeight
-        ctx.clearRect(0, 0, cssW, cssH)
+
+        ctx.fillStyle = '#ffffff'
+        ctx.fillRect(0, 0, cssW, cssH)
+
         for (const evt of strokes) drawSegment(evt.points)
-        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [strokes])
 
-    // drawing primitives (coords are in CSS px)
+    /** drawing primitives (coords are in CSS px) **/
     const drawSegment = (pts: DrawPoint[]) => {
         const ctx = ctxRef.current
         if (!ctx || pts.length < 2) return
-        for (let i = 1; i < pts.length; i++) {
-            const a = pts[i - 1]
-            const b = pts[i]
+
+        const pushLine = (a: DrawPoint, b: DrawPoint) => {
             ctx.globalCompositeOperation = a.tool === 'eraser' ? 'destination-out' : 'source-over'
             ctx.strokeStyle = a.tool === 'eraser' ? '#000' : a.color
             ctx.lineWidth = a.size
@@ -100,6 +103,27 @@ export function CanvasBoard({
             ctx.moveTo(a.x, a.y)
             ctx.lineTo(b.x, b.y)
             ctx.stroke()
+        }
+
+        const MAX_STEP = 6 // px
+        for (let i = 1; i < pts.length; i++) {
+            const a = pts[i - 1]
+            const b = pts[i]
+            const dx = b.x - a.x
+            const dy = b.y - a.y
+            const dist = Math.hypot(dx, dy)
+            if (dist <= MAX_STEP) {
+                pushLine(a, b)
+            } else {
+                const steps = Math.ceil(dist / MAX_STEP)
+                for (let s = 1; s <= steps; s++) {
+                    const t0 = (s - 1) / steps
+                    const t1 = s / steps
+                    const p0 = { ...a, x: a.x + dx * t0, y: a.y + dy * t0 }
+                    const p1 = { ...a, x: a.x + dx * t1, y: a.y + dy * t1 }
+                    pushLine(p0, p1)
+                }
+            }
         }
         ctx.globalCompositeOperation = 'source-over'
     }
@@ -141,8 +165,8 @@ export function CanvasBoard({
             { x: prev.x, y: prev.y, color, size, tool },
             { x: curr.x, y: curr.y, color, size, tool },
         ]
-        drawSegment(seg)              // local paint
-        batchRef.current.push(...seg) // queue to send
+        drawSegment(seg)
+        batchRef.current.push(...seg)
         throttleFlush()
     }
     const onUp = () => {
@@ -156,76 +180,94 @@ export function CanvasBoard({
         const c = canvasRef.current
         const ctx = ctxRef.current
         if (!c || !ctx) return
-        ctx.clearRect(0, 0, c.clientWidth, c.clientHeight)
+        ctx.fillStyle = '#ffffff'
+        ctx.fillRect(0, 0, c.clientWidth, c.clientHeight)
         onClear()
     }
 
-    return (
-        <div className={`space-y-3 ${className}`}>
-            {/* Tool strip */}
-            <div className="flex flex-wrap items-center gap-3 rounded-md border bg-gradient-to-r from-indigo-50 to-blue-50 px-3 py-2">
-        <span className="text-sm font-medium">
-          {isDrawer ? 'You are drawing' : 'You are guessing'}
-        </span>
-
+    const renderDrawerComponents = () => {
+        if(isDrawer) return (
+            <>
                 <div className="flex items-center gap-2">
-                    <span className="text-xs text-gray-600">Color</span>
-                    <input
-                        type="color"
-                        value={color}
-                        onChange={(e) => setColor(e.target.value)}
-                        disabled={!isDrawer}
-                        className="h-6 w-6 cursor-pointer rounded border disabled:opacity-50"
-                    />
+                    <span className="text-xs text-gray-400">Color</span>
+                    <div className="flex gap-1">
+                        {colors.map(c => (
+                            <button
+                                key={c}
+                                onClick={() => setColor(c)}
+                                className={`w-7 h-7 rounded-lg border-2 transition-all ${
+                                    color === c ? 'border-white scale-110' : 'border-transparent'
+                                }`}
+                                style={{ backgroundColor: c }}
+                            />
+                        ))}
+                    </div>
                 </div>
 
                 <div className="flex items-center gap-2">
-                    <span className="text-xs text-gray-600">Size</span>
+                    <span className="text-xs text-gray-400">Size</span>
                     <input
                         type="range"
                         min={2}
                         max={20}
                         value={size}
                         onChange={(e) => setSize(Number(e.target.value))}
-                        disabled={!isDrawer}
+                        className="w-24"
                     />
-                    <span className="text-xs">{size}px</span>
+                    <span className="text-xs text-gray-300 w-8">{size}px</span>
                 </div>
 
                 <div className="ml-auto flex items-center gap-2">
                     <button
-                        className={`rounded px-3 py-1 text-sm shadow-sm transition ${
-                            tool === 'pen' ? 'bg-indigo-600 text-white' : 'bg-white text-gray-700 border'
+                        className={`px-4 py-1.5 rounded-lg font-medium transition-all ${
+                            tool === 'pen'
+                                ? 'bg-gradient-to-r from-purple-600 to-pink-600 text-white shadow-lg'
+                                : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
                         }`}
                         onClick={() => setTool('pen')}
-                        disabled={!isDrawer}
                     >
-                        Pen
+                        ✏️ Pen
                     </button>
                     <button
-                        className={`rounded px-3 py-1 text-sm shadow-sm transition ${
-                            tool === 'eraser' ? 'bg-indigo-600 text-white' : 'bg-white text-gray-700 border'
+                        className={`px-4 py-1.5 rounded-lg font-medium transition-all ${
+                            tool === 'eraser'
+                                ? 'bg-gradient-to-r from-purple-600 to-pink-600 text-white shadow-lg'
+                                : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
                         }`}
                         onClick={() => setTool('eraser')}
-                        disabled={!isDrawer}
                     >
-                        Eraser
+                        🧹 Eraser
                     </button>
                     <button
-                        className="rounded bg-rose-600 px-3 py-1 text-sm text-white shadow-sm disabled:opacity-60"
+                        className="gradient-danger text-white px-4 py-1.5 rounded-lg font-medium hover:shadow-lg transition-all"
                         onClick={clear}
-                        disabled={!isDrawer}
                     >
-                        Clear
+                        🗑️ Clear
                     </button>
                 </div>
+            </>
+        )
+
+    }
+
+    return (
+        <div className={`space-y-4 ${className}`}>
+            <div className="flex flex-wrap items-center gap-3 rounded-xl bg-gray-900/50 border border-gray-700/50 px-4 py-3">
+                <span className="text-sm font-medium text-gray-300">{isDrawer ? '🎨 You are drawing' : '🔍 You are guessing'}</span>
+                {renderDrawerComponents()}
             </div>
 
-            {/* Canvas */}
-            <div ref={wrapRef} className="rounded-lg border bg-white shadow-inner">
+            <div ref={wrapRef} className="rounded-xl overflow-hidden shadow-2xl border border-gray-700/50">
                 <canvas
                     ref={canvasRef}
-                    style={{ width: '100%', height }} // CSS size; bitmap is managed in JS
+                    style={{
+                        width: '100%',
+                        height,
+                        touchAction: 'none',
+                        userSelect: 'none',
+                        backgroundColor: '#ffffff',
+                        cursor: isDrawer ? 'crosshair' : 'default'
+                    }}
                     onPointerDown={onDown}
                     onPointerMove={onMove}
                     onPointerUp={onUp}

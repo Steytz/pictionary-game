@@ -1,19 +1,23 @@
-import type {PropsWithChildren, ReactNode} from 'react'
+import type { FC, PropsWithChildren, ReactNode } from 'react'
 
-export function Card({ children, title, actions, className = '' }: PropsWithChildren<{
+interface CardProps extends PropsWithChildren {
     title?: string
     actions?: ReactNode
     className?: string
-}>) {
+}
+
+export const Card: FC<CardProps> = ({ children, title, actions, className = '' }) => {
     return (
-        <div className={`rounded-lg bg-white p-4 shadow ${className}`}>
+        <div
+            className={`rounded-2xl bg-gray-800/50 backdrop-blur-sm border border-gray-700/50 p-6 shadow-2xl ${className}`}
+        >
             {(title || actions) && (
-                <div className="mb-3 flex items-center justify-between">
-                    {title && <h2 className="text-lg font-semibold">{title}</h2>}
+                <div className="mb-4 flex items-center justify-between">
+                    {title && <h2 className="text-xl font-bold text-white">{title}</h2>}
                     {actions}
                 </div>
             )}
-            {children}
+            <div className="text-gray-100">{children}</div>
         </div>
     )
 }
