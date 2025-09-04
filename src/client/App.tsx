@@ -1,7 +1,9 @@
 import { useState } from 'react'
 import { useSocket } from './hooks/useSocket'
-import { AppLayout, TwoColumn, Card } from './components/AppLayout'
+import { AppLayout, TwoColumn } from './components/AppLayout'
 import { PlayerList } from './components/PlayerList'
+import { CanvasBoard } from './components/CanvasBoard'
+import { Card } from "./components/Card.tsx";
 
 function App() {
     const [playerName, setPlayerName] = useState('')
@@ -17,7 +19,9 @@ function App() {
         currentWord,
         timeRemaining,
         selectedWord,
-
+        strokes,
+        draw,
+        clearCanvas,
         createRoom,
         joinRoom,
         leaveRoom,
@@ -35,11 +39,14 @@ function App() {
         setMessage('')
     }
 
+    const drawerId = gameState?.players.find((p) => p.isDrawing)?.id
+    const iAmDrawer = drawerId === myPlayerId
+
     return (
         <AppLayout>
             <Card title="Pictionary Game">
                 <div className="text-sm text-gray-600">
-                    Connection:{' '}    
+                    Connection:{' '}
                     <span className={connected ? 'text-green-600 font-semibold' : 'text-red-600 font-semibold'}>
             {connected ? 'Connected' : 'Disconnected'}
           </span>
@@ -50,7 +57,7 @@ function App() {
                 <Card title="Join or Create Room">
                     <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
                         <div className="flex-1">
-                            <label className="block text-sm text-gray-600 mb-1">Your name</label>
+                            <label className="mb-1 block text-sm text-gray-600">Your name</label>
                             <input
                                 type="text"
                                 value={playerName}
@@ -71,7 +78,7 @@ function App() {
 
                     <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-end">
                         <div className="flex-1">
-                            <label className="block text-sm text-gray-600 mb-1">Room ID</label>
+                            <label className="mb-1 block text-sm text-gray-600">Room ID</label>
                             <input
                                 type="text"
                                 value={inputRoomId}
@@ -108,9 +115,7 @@ function App() {
                         >
                             <div className="mb-3 text-sm text-gray-600">
                                 Drawer:{' '}
-                                <span className="font-medium">
-                  {gameState.players.find((p) => p.isDrawing)?.name ?? '—'}
-                </span>
+                                <span className="font-medium">{gameState.players.find((p) => p.isDrawing)?.name ?? '—'}</span>
                             </div>
                             <PlayerList players={gameState.players} myPlayerId={myPlayerId} />
                         </Card>
@@ -137,7 +142,17 @@ function App() {
                                 </div>
                             </div>
 
-                            {/* Word selection (server decides who sees options by sending non-empty array) */}
+                            <div className="mb-6">
+                                <CanvasBoard
+                                    isDrawer={iAmDrawer}
+                                    strokes={strokes}
+                                    onDraw={draw}
+                                    onClear={clearCanvas}
+                                    width={Math.min(900, window.innerWidth - 64)}
+                                    height={480}
+                                />
+                            </div>
+
                             {wordOptions.length > 0 && (
                                 <div className="mb-4 rounded bg-yellow-100 p-4">
                                     <p className="mb-2 font-semibold">Choose a word to draw:</p>
@@ -161,7 +176,6 @@ function App() {
                                 </div>
                             )}
 
-                            {/* Current word */}
                             {currentWord && (
                                 <div className="mb-4 rounded bg-blue-100 p-4">
                                     {selectedWord ? (
@@ -180,7 +194,6 @@ function App() {
                                 </div>
                             )}
 
-                            {/* Winner */}
                             {gameState.gameStatus === 'gameOver' && gameState.winner && (
                                 <div className="mb-4 rounded bg-green-100 p-4">
                                     <p className="text-xl font-bold">
@@ -189,7 +202,6 @@ function App() {
                                 </div>
                             )}
 
-                            {/* Chat */}
                             <div className="mt-4">
                                 <h3 className="mb-2 font-semibold">Chat / Guesses</h3>
                                 <div className="mb-2 h-40 overflow-y-auto rounded border bg-gray-50 p-2">

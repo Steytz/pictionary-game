@@ -28,6 +28,13 @@ export function useSocket() {
     const [myPlayerId, setMyPlayerId] = useState('')
     const [selectedWord, setSelectedWord] = useState('')
 
+    const [strokes, setStrokes] = useState<DrawEvent[]>([])
+
+    const myIdRef = useRef(myPlayerId)
+    useEffect(() => {
+        myIdRef.current = myPlayerId
+    }, [myPlayerId])
+
     const socketRef = useRef<SIO | null>(null)
 
     const socket = useMemo(() => {
@@ -58,7 +65,11 @@ export function useSocket() {
             setGameState((prev) => (prev ? { ...prev, players } : prev))
         const onPlayerLeft = (_playerId: string, players: Player[]) =>
             setGameState((prev) => (prev ? { ...prev, players } : prev))
-        const onGameState = (state: GameState) => setGameState(state)
+
+        const onGameState = (state: GameState) => {
+            setGameState(state)
+            if (state.drawingData) setStrokes(state.drawingData)
+        }
 
         s.on('room-created', onRoomCreated)
         s.on('player-joined', onPlayerJoined)
@@ -69,32 +80,42 @@ export function useSocket() {
             setGameState((prev) => (prev ? { ...prev, messages: [...prev.messages, msg] } : prev))
         s.on('chat-message', onChat)
 
-        const onGameStarted = (_drawerId: string, options: WordOption[]) => {
-            setWordOptions(options)  // non-empty only for drawer
+        const onGameStarted = (drawerId: string, options: WordOption[]) => {
+            const iAmDrawer = myIdRef.current && myIdRef.current === drawerId
+            setWordOptions(iAmDrawer ? options : [])
             setCurrentWord(null)
             setSelectedWord('')
+            setError('')
         }
+
         const onWordSelected = (wordLength: number, difficulty: Difficulty, timeLimit: number) => {
             setCurrentWord({ length: wordLength, difficulty })
             setWordOptions([])
             setTimeRemaining(timeLimit)
         }
+
         const onDrawerWord = (word: string, difficulty: Difficulty, timeLimit: number) => {
             setSelectedWord(word)
             setCurrentWord({ length: word.length, difficulty })
             setWordOptions([])
             setTimeRemaining(timeLimit)
         }
+
         const onTimer = (t: number) => setTimeRemaining(t)
+
         const onRoundEnded = () => {
             setCurrentWord(null)
             setWordOptions([])
             setSelectedWord('')
+            setStrokes([]) // clear board between rounds
+            setError('')
         }
+
         const onGameOver = () => {
             setWordOptions([])
             setSelectedWord('')
             setCurrentWord(null)
+            setStrokes([])
         }
 
         s.on('game-started', onGameStarted)
@@ -103,6 +124,11 @@ export function useSocket() {
         s.on('timer-update', onTimer)
         s.on('round-ended', onRoundEnded)
         s.on('game-over', onGameOver)
+
+        const onDrawing = (evt: DrawEvent) => setStrokes((prev) => [...prev, evt])
+        const onCleared = () => setStrokes([])
+        s.on('drawing-update', onDrawing)
+        s.on('canvas-cleared', onCleared)
 
         const onErr = (msg: string) => setError(msg)
         s.on('error', onErr)
@@ -122,8 +148,9 @@ export function useSocket() {
             s.off('timer-update', onTimer)
             s.off('round-ended', onRoundEnded)
             s.off('game-over', onGameOver)
+            s.off('drawing-update', onDrawing)
+            s.off('canvas-cleared', onCleared)
             s.off('error', onErr)
-            // leave socketRef.current intact
         }
     }, [socket])
 
@@ -140,6 +167,7 @@ export function useSocket() {
                 setSelectedWord('')
                 setMyPlayerId('')
                 setError('')
+                setStrokes([])
             },
             startGame: () => socket.emit('start-game'),
             selectWord: (word: string, difficulty: Difficulty) => socket.emit('select-word', word, difficulty),
@@ -159,6 +187,7 @@ export function useSocket() {
         currentWord,
         timeRemaining,
         selectedWord,
+        strokes,
         ...actions,
     }
 }
