@@ -144,3 +144,5 @@ Total: ~3h
 -	Add Playwright E2E (two browsers guessing/drawing).
 -	Add unit tests for GameRoom (rotation, scoring, win conditions, timers).
 -	Structured logging (pino), error boundary UI, Sentry (optional).
+
+![Screenshot 2025-09-04 at 20 16 53](https://github.com/user-attachments/assets/1a04f4cf-29e7-4317-bfdb-33dce8e1e8a1)
